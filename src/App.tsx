@@ -312,6 +312,7 @@ export default function NotionExcelMergeApp() {
   const [pages, setPages] = useState<NotionPage[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadSuccess, setLoadSuccess] = useState<string | null>(null);
 
   // Merge config
   const [joinType, setJoinType] = useState<JoinType>("left");
@@ -356,6 +357,15 @@ export default function NotionExcelMergeApp() {
 
   async function loadDatabase() {
     setLoadError(null);
+    setLoadSuccess(null);
+    if (!databaseId.trim()) {
+      setLoadError("Database ID is required");
+      return;
+    }
+    if (!useMock && !proxyBaseUrl) {
+      setLoadError("Proxy base URL is required in proxy mode");
+      return;
+    }
     setLoadingDb(true);
     try {
       const db = await api.retrieveDatabase(databaseId.trim());
@@ -368,8 +378,11 @@ export default function NotionExcelMergeApp() {
 
       const q = await api.queryDatabase(databaseId.trim());
       setPages(q.results);
+      setLoadSuccess("Database loaded successfully");
     } catch (err: any) {
       console.error(err);
+      setDbProps([]);
+      setPages([]);
       setLoadError(err?.message ?? String(err));
     } finally {
       setLoadingDb(false);
@@ -636,8 +649,16 @@ export default function NotionExcelMergeApp() {
                 <Button variant="secondary" onClick={loadDatabase} disabled={!databaseId || (!useMock && !proxyBaseUrl) || loadingDb}>
                   <Database className="mr-2 h-4 w-4" /> {loadingDb ? "Loading…" : "Load Database"}
                 </Button>
+                {loadSuccess && (
+                  <Alert className="mt-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Database loaded</AlertTitle>
+                    <AlertDescription className="text-xs">{loadSuccess}</AlertDescription>
+                  </Alert>
+                )}
                 {loadError && (
                   <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="h-4 w-4" />
                     <AlertTitle>Failed to load database</AlertTitle>
                     <AlertDescription className="text-xs">{loadError}</AlertDescription>
                   </Alert>
