@@ -53,8 +53,17 @@ app.post("/api/notion-merge/databases/retrieve", async (req, res) => {
 
 app.post("/api/notion-merge/databases/query", async (req, res) => {
   const token = getToken(req);
-  const { database_id } = req.body;
-  await notionRequest(res, `/databases/${database_id}/query`, "POST", undefined, token);
+  const { database_id, start_cursor, page_size } = req.body;
+  const body = {};
+  if (start_cursor) body.start_cursor = start_cursor;
+  if (page_size) body.page_size = page_size;
+  await notionRequest(
+    res,
+    `/databases/${database_id}/query`,
+    "POST",
+    Object.keys(body).length ? body : undefined,
+    token
+  );
 });
 
 app.patch("/api/notion-merge/databases/update", async (req, res) => {

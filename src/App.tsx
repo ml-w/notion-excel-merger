@@ -45,7 +45,7 @@ import * as XLSX from "xlsx";
  * How to use PROXY MODE locally (Vite/Next/Express):
  * - Provide an HTTP endpoint for the following routes (examples below):
  *   POST {baseUrl}/databases/retrieve   body: { database_id }
- *   POST {baseUrl}/databases/query      body: { database_id, start_cursor? }
+ *   POST {baseUrl}/databases/query      body: { database_id, start_cursor?, page_size? }
  *   PATCH {baseUrl}/databases/update    body: { database_id, properties }
  *   PATCH {baseUrl}/pages/update        body: { page_id, properties }
  *   POST {baseUrl}/pages/create         body: { parent: { database_id }, properties }
@@ -280,8 +280,17 @@ function createProxyApi(baseUrl: string, token: string) {
       const r = await fetch(`${baseUrl}/databases/retrieve`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
       return await handle<NotionDatabase>(r);
     },
-    async queryDatabase(database_id: string): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }> {
-      const r = await fetch(`${baseUrl}/databases/query`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
+    async queryDatabase(
+      database_id: string,
+      start_cursor?: string
+    ): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }> {
+      const body: any = { database_id, page_size: 100 };
+      if (start_cursor) body.start_cursor = start_cursor;
+      const r = await fetch(`${baseUrl}/databases/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
       return await handle(r);
     },
     async updateDatabase(database_id: string, properties: any) {
@@ -391,8 +400,15 @@ export default function NotionExcelMergeApp() {
       setDbProps(props);
       if (!notionKey && props.length > 0) setNotionKey(props[0].name);
 
-      const q = await api.queryDatabase(databaseId.trim());
-      setPages(q.results);
+      const all: NotionPage[] = [];
+      let cursor: string | undefined = undefined;
+      do {
+        const q = await api.queryDatabase(databaseId.trim(), cursor);
+        all.push(...q.results);
+        cursor = q.next_cursor;
+        if (!q.has_more) break;
+      } while (cursor);
+      setPages(all);
       setLoadSuccess("Database loaded successfully");
     } catch (err: any) {
       console.error(err);
@@ -583,8 +599,15 @@ export default function NotionExcelMergeApp() {
       }, 100);
 
       // refresh list
-      const q = await api.queryDatabase(databaseId.trim());
-      setPages(q.results);
+      const refreshed: NotionPage[] = [];
+      let cursor: string | undefined = undefined;
+      do {
+        const q = await api.queryDatabase(databaseId.trim(), cursor);
+        refreshed.push(...q.results);
+        cursor = q.next_cursor;
+        if (!q.has_more) break;
+      } while (cursor);
+      setPages(refreshed);
 
       setRunStatus("done");
     } catch (err: any) {
