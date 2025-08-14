@@ -118,7 +118,7 @@ function getNotionPropertyPlainValue(prop: any): string | number | null {
     case "date":
       return v?.start ?? null;
     case "checkbox":
-      return !!v ? "true" : "false";
+      return v ? "true" : "false";
     case "status":
       return v?.name ?? null;
     default:
@@ -173,10 +173,8 @@ function buildNotionPropertyValue(targetType: string, value: any, { createMultiF
 async function pMapSerial<T, R>(items: T[], fn: (item: T, idx: number) => Promise<R>, delayMs = 350) {
   const out: R[] = [];
   for (let i = 0; i < items.length; i++) {
-    // eslint-disable-next-line no-await-in-loop
     out.push(await fn(items[i], i));
     if (delayMs > 0 && i < items.length - 1) {
-      // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -261,24 +259,38 @@ function createMockApi(state: MockState) {
 function createProxyApi(baseUrl: string, token: string) {
   // The token should be stored on your server. The UI passes no token by default.
   const headers: HeadersInit = { "Content-Type": "application/json", Authorization: token ? `Bearer ${token}` : "" };
+
+  async function handle<T>(r: Response): Promise<T> {
+    const text = await r.text();
+    if (!r.ok) {
+      let msg = text;
+      try {
+        const data = JSON.parse(text);
+        msg = data.message ?? text;
+      } catch {
+        /* ignore JSON parse errors */
+      }
+      throw new Error(`${r.status} ${r.statusText}${msg ? `: ${msg}` : ""}`);
+    }
+    return text ? (JSON.parse(text) as T) : (undefined as any);
+  }
+
   return {
     async retrieveDatabase(database_id: string): Promise<NotionDatabase> {
       const r = await fetch(`${baseUrl}/databases/retrieve`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
-      if (!r.ok) throw new Error(await r.text());
-      return (await r.json()) as NotionDatabase;
+      return await handle<NotionDatabase>(r);
     },
-    async queryDatabase(database_id: string): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }>{
+    async queryDatabase(database_id: string): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }> {
       const r = await fetch(`${baseUrl}/databases/query`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
-      if (!r.ok) throw new Error(await r.text());
-      return (await r.json()) as any;
+      return await handle(r);
     },
     async updateDatabase(database_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/databases/update`, { method: "PATCH", headers, body: JSON.stringify({ database_id, properties }) });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
     async updatePage(page_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/pages/update`, { method: "PATCH", headers, body: JSON.stringify({ page_id, properties }) });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
     async createPage(database_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/pages/create`, {
@@ -286,7 +298,7 @@ function createProxyApi(baseUrl: string, token: string) {
         headers,
         body: JSON.stringify({ parent: { database_id }, properties }),
       });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
   };
 }
@@ -295,10 +307,10 @@ function createProxyApi(baseUrl: string, token: string) {
 // Main Component
 // -------------------------------
 
-export default function NotionExcelMergeApp(): JSX.Element {
+export default function NotionExcelMergeApp() {
   // Backend mode
   const [useMock, setUseMock] = useState<boolean>(true); // default to mock so Canvas works
-  const [proxyBaseUrl, setProxyBaseUrl] = useState<string>(""); // e.g. /api/notion-merge
+  const [proxyBaseUrl, setProxyBaseUrl] = useState<string>("/api/notion-merge"); // e.g. /api/notion-merge
 
   // Credentials (kept only in state; for PROXY mode you typically DON'T send token from the browser)
   const [notionToken, setNotionToken] = useState<string>(""); // optional if your proxy expects a bearer
@@ -314,6 +326,7 @@ export default function NotionExcelMergeApp(): JSX.Element {
   const [pages, setPages] = useState<NotionPage[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadSuccess, setLoadSuccess] = useState<string | null>(null);
 
   // Merge config
   const [joinType, setJoinType] = useState<JoinType>("left");
@@ -329,6 +342,7 @@ export default function NotionExcelMergeApp(): JSX.Element {
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [runError, setRunError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // API instance
   const mock = useMemo(() => makeMock(), []);
@@ -347,13 +361,26 @@ export default function NotionExcelMergeApp(): JSX.Element {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const json: ExcelRow[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
     setExcelRows(json);
-    const cols = Array.from(json.reduce((acc, row) => { Object.keys(row).forEach((k) => acc.add(k)); return acc; }, new Set<string>()));
+    const colsSet = json.reduce<Set<string>>((acc, row) => {
+      Object.keys(row).forEach((k) => acc.add(k));
+      return acc;
+    }, new Set<string>());
+    const cols = Array.from(colsSet);
     setExcelColumns(cols);
     if (!excelKey && cols.length > 0) setExcelKey(cols[0]);
   };
 
   async function loadDatabase() {
     setLoadError(null);
+    setLoadSuccess(null);
+    if (!databaseId.trim()) {
+      setLoadError("Database ID is required");
+      return;
+    }
+    if (!useMock && !proxyBaseUrl) {
+      setLoadError("Proxy base URL is required in proxy mode");
+      return;
+    }
     setLoadingDb(true);
     try {
       const db = await api.retrieveDatabase(databaseId.trim());
@@ -366,9 +393,13 @@ export default function NotionExcelMergeApp(): JSX.Element {
 
       const q = await api.queryDatabase(databaseId.trim());
       setPages(q.results);
+      setLoadSuccess("Database loaded successfully");
     } catch (err: any) {
       console.error(err);
-      setLoadError(err?.message ?? String(err));
+      setDbProps([]);
+      setPages([]);
+      const msg = err?.message && String(err.message).trim() ? err.message : 'Failed to load database';
+      setLoadError(msg);
     } finally {
       setLoadingDb(false);
     }
@@ -462,13 +493,20 @@ export default function NotionExcelMergeApp(): JSX.Element {
   return plans;
   }
 
-  function onPreview() { setDryRun(buildPlannedUpdates()); }
+  function onPreview() {
+    try {
+      setPreviewError(null);
+      setDryRun(buildPlannedUpdates());
+    } catch (err: any) {
+      console.error(err);
+      setPreviewError(err?.message ?? String(err));
+    }
+  }
 
   async function ensureSelectOptions(needed: Array<{ prop: NotionPropertyDef; name: string }>) {
     if (!needed.length) return;
     if (useMock) {
       // In mock mode, update the local DB schema
-      const updateProps: any = {};
       const byProp = new Map<string, Set<string>>();
       for (const n of needed) {
         const set = byProp.get(n.prop.name) ?? new Set<string>();
@@ -551,7 +589,8 @@ export default function NotionExcelMergeApp(): JSX.Element {
       setRunStatus("done");
     } catch (err: any) {
       console.error(err);
-      setRunError(err?.message ?? String(err));
+      const msg = err?.message && String(err.message).trim() ? err.message : 'Update failed';
+      setRunError(msg);
       setRunStatus("error");
     }
   }
@@ -580,11 +619,7 @@ export default function NotionExcelMergeApp(): JSX.Element {
     results.push({ name: "checkbox yes", pass: (c1 as any)?.checkbox === true });
     // 5) join planning
     const excel = [{ K: "A001", v: 1 }, { K: "X999", v: 2 }];
-    const pagesLocal: NotionPage[] = [
-      { id: "p1", properties: { Key: { type: "title", title: [{ type: "text", text: { content: "A001" }, plain_text: "A001" }] } } },
-    ];
     const excelIdx = new Map<string, ExcelRow>(excel.map((r) => [r.K, r]));
-    const notionIdx = new Map<string, NotionPage>([["A001", pagesLocal[0]]]);
     // left join keys count should be 2
     results.push({ name: "left join keys", pass: (function(){
       const keys = new Set<string>();
@@ -639,8 +674,16 @@ export default function NotionExcelMergeApp(): JSX.Element {
                 <Button variant="secondary" onClick={loadDatabase} disabled={!databaseId || (!useMock && !proxyBaseUrl) || loadingDb}>
                   <Database className="mr-2 h-4 w-4" /> {loadingDb ? "Loading…" : "Load Database"}
                 </Button>
+                {loadSuccess && (
+                  <Alert className="mt-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Database loaded</AlertTitle>
+                    <AlertDescription className="text-xs">{loadSuccess}</AlertDescription>
+                  </Alert>
+                )}
                 {loadError && (
                   <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="h-4 w-4" />
                     <AlertTitle>Failed to load database</AlertTitle>
                     <AlertDescription className="text-xs">{loadError}</AlertDescription>
                   </Alert>
@@ -814,6 +857,14 @@ export default function NotionExcelMergeApp(): JSX.Element {
                     <Alert className="mt-3">
                       <AlertTitle className="text-sm">Almost there</AlertTitle>
                       <AlertDescription className="text-xs">Load the database, upload an Excel, set key columns, and add at least one mapping.</AlertDescription>
+                    </Alert>
+                  )}
+
+                  {previewError && (
+                    <Alert variant="destructive" className="mt-3">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Dry run failed</AlertTitle>
+                      <AlertDescription className="text-xs">{previewError}</AlertDescription>
                     </Alert>
                   )}
 
