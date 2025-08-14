@@ -118,7 +118,7 @@ function getNotionPropertyPlainValue(prop: any): string | number | null {
     case "date":
       return v?.start ?? null;
     case "checkbox":
-      return !!v ? "true" : "false";
+      return v ? "true" : "false";
     case "status":
       return v?.name ?? null;
     default:
@@ -173,10 +173,8 @@ function buildNotionPropertyValue(targetType: string, value: any, { createMultiF
 async function pMapSerial<T, R>(items: T[], fn: (item: T, idx: number) => Promise<R>, delayMs = 350) {
   const out: R[] = [];
   for (let i = 0; i < items.length; i++) {
-    // eslint-disable-next-line no-await-in-loop
     out.push(await fn(items[i], i));
     if (delayMs > 0 && i < items.length - 1) {
-      // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -295,10 +293,10 @@ function createProxyApi(baseUrl: string, token: string) {
 // Main Component
 // -------------------------------
 
-export default function NotionExcelMergeApp(): JSX.Element {
+export default function NotionExcelMergeApp() {
   // Backend mode
   const [useMock, setUseMock] = useState<boolean>(true); // default to mock so Canvas works
-  const [proxyBaseUrl, setProxyBaseUrl] = useState<string>(""); // e.g. /api/notion-merge
+  const [proxyBaseUrl, setProxyBaseUrl] = useState<string>("/api/notion-merge"); // e.g. /api/notion-merge
 
   // Credentials (kept only in state; for PROXY mode you typically DON'T send token from the browser)
   const [notionToken, setNotionToken] = useState<string>(""); // optional if your proxy expects a bearer
@@ -347,7 +345,11 @@ export default function NotionExcelMergeApp(): JSX.Element {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const json: ExcelRow[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
     setExcelRows(json);
-    const cols = Array.from(json.reduce((acc, row) => { Object.keys(row).forEach((k) => acc.add(k)); return acc; }, new Set<string>()));
+    const colsSet = json.reduce<Set<string>>((acc, row) => {
+      Object.keys(row).forEach((k) => acc.add(k));
+      return acc;
+    }, new Set<string>());
+    const cols = Array.from(colsSet);
     setExcelColumns(cols);
     if (!excelKey && cols.length > 0) setExcelKey(cols[0]);
   };
@@ -468,7 +470,6 @@ export default function NotionExcelMergeApp(): JSX.Element {
     if (!needed.length) return;
     if (useMock) {
       // In mock mode, update the local DB schema
-      const updateProps: any = {};
       const byProp = new Map<string, Set<string>>();
       for (const n of needed) {
         const set = byProp.get(n.prop.name) ?? new Set<string>();
@@ -580,11 +581,7 @@ export default function NotionExcelMergeApp(): JSX.Element {
     results.push({ name: "checkbox yes", pass: (c1 as any)?.checkbox === true });
     // 5) join planning
     const excel = [{ K: "A001", v: 1 }, { K: "X999", v: 2 }];
-    const pagesLocal: NotionPage[] = [
-      { id: "p1", properties: { Key: { type: "title", title: [{ type: "text", text: { content: "A001" }, plain_text: "A001" }] } } },
-    ];
     const excelIdx = new Map<string, ExcelRow>(excel.map((r) => [r.K, r]));
-    const notionIdx = new Map<string, NotionPage>([["A001", pagesLocal[0]]]);
     // left join keys count should be 2
     results.push({ name: "left join keys", pass: (function(){
       const keys = new Set<string>();
