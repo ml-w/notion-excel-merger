@@ -259,24 +259,38 @@ function createMockApi(state: MockState) {
 function createProxyApi(baseUrl: string, token: string) {
   // The token should be stored on your server. The UI passes no token by default.
   const headers: HeadersInit = { "Content-Type": "application/json", Authorization: token ? `Bearer ${token}` : "" };
+
+  async function handle<T>(r: Response): Promise<T> {
+    const text = await r.text();
+    if (!r.ok) {
+      let msg = text;
+      try {
+        const data = JSON.parse(text);
+        msg = data.message ?? text;
+      } catch {
+        /* ignore JSON parse errors */
+      }
+      throw new Error(`${r.status} ${r.statusText}${msg ? `: ${msg}` : ""}`);
+    }
+    return text ? (JSON.parse(text) as T) : (undefined as any);
+  }
+
   return {
     async retrieveDatabase(database_id: string): Promise<NotionDatabase> {
       const r = await fetch(`${baseUrl}/databases/retrieve`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
-      if (!r.ok) throw new Error(await r.text());
-      return (await r.json()) as NotionDatabase;
+      return await handle<NotionDatabase>(r);
     },
-    async queryDatabase(database_id: string): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }>{
+    async queryDatabase(database_id: string): Promise<{ results: NotionPage[]; has_more: boolean; next_cursor?: string }> {
       const r = await fetch(`${baseUrl}/databases/query`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
-      if (!r.ok) throw new Error(await r.text());
-      return (await r.json()) as any;
+      return await handle(r);
     },
     async updateDatabase(database_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/databases/update`, { method: "PATCH", headers, body: JSON.stringify({ database_id, properties }) });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
     async updatePage(page_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/pages/update`, { method: "PATCH", headers, body: JSON.stringify({ page_id, properties }) });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
     async createPage(database_id: string, properties: any) {
       const r = await fetch(`${baseUrl}/pages/create`, {
@@ -284,7 +298,7 @@ function createProxyApi(baseUrl: string, token: string) {
         headers,
         body: JSON.stringify({ parent: { database_id }, properties }),
       });
-      if (!r.ok) throw new Error(await r.text());
+      await handle(r);
     },
   };
 }
@@ -328,6 +342,7 @@ export default function NotionExcelMergeApp() {
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [runError, setRunError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // API instance
   const mock = useMemo(() => makeMock(), []);
@@ -383,7 +398,8 @@ export default function NotionExcelMergeApp() {
       console.error(err);
       setDbProps([]);
       setPages([]);
-      setLoadError(err?.message ?? String(err));
+      const msg = err?.message && String(err.message).trim() ? err.message : 'Failed to load database';
+      setLoadError(msg);
     } finally {
       setLoadingDb(false);
     }
@@ -477,7 +493,15 @@ export default function NotionExcelMergeApp() {
   return plans;
   }
 
-  function onPreview() { setDryRun(buildPlannedUpdates()); }
+  function onPreview() {
+    try {
+      setPreviewError(null);
+      setDryRun(buildPlannedUpdates());
+    } catch (err: any) {
+      console.error(err);
+      setPreviewError(err?.message ?? String(err));
+    }
+  }
 
   async function ensureSelectOptions(needed: Array<{ prop: NotionPropertyDef; name: string }>) {
     if (!needed.length) return;
@@ -565,7 +589,8 @@ export default function NotionExcelMergeApp() {
       setRunStatus("done");
     } catch (err: any) {
       console.error(err);
-      setRunError(err?.message ?? String(err));
+      const msg = err?.message && String(err.message).trim() ? err.message : 'Update failed';
+      setRunError(msg);
       setRunStatus("error");
     }
   }
@@ -832,6 +857,14 @@ export default function NotionExcelMergeApp() {
                     <Alert className="mt-3">
                       <AlertTitle className="text-sm">Almost there</AlertTitle>
                       <AlertDescription className="text-xs">Load the database, upload an Excel, set key columns, and add at least one mapping.</AlertDescription>
+                    </Alert>
+                  )}
+
+                  {previewError && (
+                    <Alert variant="destructive" className="mt-3">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Dry run failed</AlertTitle>
+                      <AlertDescription className="text-xs">{previewError}</AlertDescription>
                     </Alert>
                   )}
 

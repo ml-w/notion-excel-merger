@@ -12,18 +12,26 @@ npm install
 
 ## Start
 
-Start the app and proxy server:
+### Development
 
-```bash
-npm start
-```
-
-This serves the compiled app on <http://localhost:3000>. The proxy will forward
-requests under `/api/notion-merge` to the Notion API. Supply a Notion token in
-the UI or set the `NOTION_TOKEN` environment variable before starting.
-
-For development with hot reloading you can still use Vite:
+Run the web app and proxy server together:
 
 ```bash
 npm run dev
 ```
+
+This starts the Vite dev server and the Express proxy concurrently
+(`http://localhost:5173` with API requests forwarded to `localhost:3000`).
+
+### Production
+
+Build and serve the compiled app:
+
+```bash
+npm run build
+npm start
+```
+
+`npm start` serves the built files on <http://localhost:3000> and proxies
+`/api/notion-merge` requests to the Notion API. Supply a Notion token in the UI
+or set the `NOTION_TOKEN` environment variable before starting.
