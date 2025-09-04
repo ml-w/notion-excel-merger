@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   Upload,
@@ -13,6 +13,8 @@ import {
   Trash2,
   CheckCircle2,
   AlertTriangle,
+  Code,
+  Search,
 } from "lucide-react";
 
 // shadcn/ui components
@@ -80,6 +82,14 @@ type NotionDatabase = {
 type NotionPage = {
   id: string;
   properties: Record<string, any>;
+};
+
+type NotionDatabaseInfo = {
+  id: string;
+  title: string;
+  url?: string;
+  created_time?: string;
+  last_edited_time?: string;
 };
 
 type Plan =
@@ -249,6 +259,97 @@ function createMockApi(state: MockState) {
       const id = uid();
       state.pages.push({ id, properties });
     },
+    async extractSchema(database_id: string): Promise<object> {
+      if (!state.db || state.db.id !== database_id) throw new Error("Database not found (mock)");
+      
+      // Generate mock JSON schema
+      const jsonSchema = {
+        $schema: "http://json-schema.org/draft-07/schema#",
+        type: "object",
+        title: "Mock Notion Database",
+        description: `JSON Schema for mock database: ${database_id}`,
+        properties: {},
+        required: ["Key"]
+      };
+      
+      // Convert mock properties to JSON schema format
+      const properties: Record<string, any> = {};
+      for (const [propName, propDef] of Object.entries(state.db.properties)) {
+        switch (propDef.type) {
+          case "title":
+            properties[propName] = {
+              type: "string",
+              title: propName,
+              description: `Notion title property`
+            };
+            break;
+          case "select":
+            properties[propName] = {
+              type: "string",
+              title: propName,
+              description: `Notion select property. Available options: New, Done`,
+              enum: ["New", "Done"]
+            };
+            break;
+          case "multi_select":
+            properties[propName] = {
+              type: "array",
+              title: propName,
+              description: `Notion multi_select property. Available options: red, blue`,
+              items: {
+                type: "string",
+                enum: ["red", "blue"]
+              },
+              uniqueItems: true
+            };
+            break;
+          case "number":
+            properties[propName] = {
+              type: "number",
+              title: propName,
+              description: `Notion number property`
+            };
+            break;
+          case "rich_text":
+            properties[propName] = {
+              type: "string",
+              title: propName,
+              description: `Notion rich_text property`
+            };
+            break;
+          default:
+            properties[propName] = {
+              type: "string",
+              title: propName,
+              description: `Notion ${propDef.type} property`
+            };
+        }
+      }
+      jsonSchema.properties = properties;
+      
+      return jsonSchema;
+    },
+    async listDatabases(): Promise<{ databases: NotionDatabaseInfo[] }> {
+      // Return mock databases
+      return {
+        databases: [
+          {
+            id: "mock-db",
+            title: "Mock Sample Database",
+            url: "https://notion.so/mock-db",
+            created_time: "2024-01-01T00:00:00.000Z",
+            last_edited_time: "2024-01-02T00:00:00.000Z"
+          },
+          {
+            id: "mock-db-2", 
+            title: "Another Mock Database",
+            url: "https://notion.so/mock-db-2",
+            created_time: "2024-01-03T00:00:00.000Z",
+            last_edited_time: "2024-01-04T00:00:00.000Z"
+          }
+        ]
+      };
+    },
   };
 }
 
@@ -309,6 +410,14 @@ function createProxyApi(baseUrl: string, token: string) {
       });
       await handle(r);
     },
+    async extractSchema(database_id: string): Promise<object> {
+      const r = await fetch(`${baseUrl}/databases/schema`, { method: "POST", headers, body: JSON.stringify({ database_id }) });
+      return await handle<object>(r);
+    },
+    async listDatabases(): Promise<{ databases: NotionDatabaseInfo[] }> {
+      const r = await fetch(`${baseUrl}/databases/list`, { method: "POST", headers });
+      return await handle<{ databases: NotionDatabaseInfo[] }>(r);
+    },
   };
 }
 
@@ -318,12 +427,12 @@ function createProxyApi(baseUrl: string, token: string) {
 
 export default function NotionExcelMergeApp() {
   // Backend mode
-  const [useMock, setUseMock] = useState<boolean>(true); // default to mock so Canvas works
+  const [useMock, setUseMock] = useState<boolean>(false); // default to proxy mode
   const [proxyBaseUrl, setProxyBaseUrl] = useState<string>("/api/notion-merge"); // e.g. /api/notion-merge
 
   // Credentials (kept only in state; for PROXY mode you typically DON'T send token from the browser)
   const [notionToken, setNotionToken] = useState<string>(""); // optional if your proxy expects a bearer
-  const [databaseId, setDatabaseId] = useState<string>("mock-db");
+  const [databaseId, setDatabaseId] = useState<string>("");
 
   // Excel state
   const [excelRows, setExcelRows] = useState<ExcelRow[]>([]);
@@ -352,6 +461,16 @@ export default function NotionExcelMergeApp() {
   const [progress, setProgress] = useState(0);
   const [runError, setRunError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+
+  // Schema extraction state
+  const [jsonSchema, setJsonSchema] = useState<object | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+
+  // Database listing state
+  const [availableDatabases, setAvailableDatabases] = useState<NotionDatabaseInfo[]>([]);
+  const [databasesLoading, setDatabasesLoading] = useState(false);
+  const [databasesError, setDatabasesError] = useState<string | null>(null);
 
   // API instance
   const mock = useMemo(() => makeMock(), []);
@@ -420,6 +539,96 @@ export default function NotionExcelMergeApp() {
       setLoadingDb(false);
     }
   }
+
+  async function extractDatabaseSchema() {
+    setSchemaError(null);
+    setJsonSchema(null);
+    if (!databaseId.trim()) {
+      setSchemaError("Database ID is required");
+      return;
+    }
+    if (!useMock && !proxyBaseUrl) {
+      setSchemaError("Proxy base URL is required in proxy mode");
+      return;
+    }
+    setSchemaLoading(true);
+    try {
+      const schema = await api.extractSchema(databaseId.trim());
+      setJsonSchema(schema);
+      
+      // Auto-download the schema as a JSON file
+      const blob = new Blob([JSON.stringify(schema, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `notion-database-${databaseId.trim()}-schema.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(err);
+      const msg = err?.message && String(err.message).trim() ? err.message : 'Failed to extract schema';
+      setSchemaError(msg);
+    } finally {
+      setSchemaLoading(false);
+    }
+  }
+
+  const fetchDatabases = useCallback(async () => {
+    setDatabasesError(null);
+    setAvailableDatabases([]);
+    
+    if (useMock) {
+      // Mock databases
+      setAvailableDatabases([
+        { id: "mock-db", title: "Mock Sample Database" },
+        { id: "mock-db-2", title: "Another Mock Database" }
+      ]);
+      return;
+    }
+    
+    if (!notionToken.trim()) {
+      setDatabasesError("Please enter your Notion API token first");
+      return;
+    }
+    
+    setDatabasesLoading(true);
+    try {
+      const response = await fetch('/api/notion-merge/databases/list', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${notionToken}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      setAvailableDatabases(result.databases || []);
+      
+      if (result.databases && result.databases.length === 0) {
+        setDatabasesError("No databases found. Make sure your token has access to databases.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setDatabasesError(`Failed to fetch databases: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setDatabasesLoading(false);
+    }
+  }, [useMock, notionToken]);
+
+  // Clear databases when switching modes or token changes
+  useEffect(() => {
+    if (!useMock && !notionToken.trim()) {
+      // Clear databases when token is removed
+      setAvailableDatabases([]);
+      setDatabasesError(null);
+    }
+  }, [useMock, notionToken]);
 
   function addMapping() {
     const firstExcel = excelColumns.find((c) => !mappings.some((m) => m.excelColumn === c));
@@ -691,12 +900,65 @@ export default function NotionExcelMergeApp() {
                   </>
                 )}
 
-                <Label>Database ID</Label>
-                <Input placeholder="mock-db or your real DB ID" value={databaseId} onChange={(e) => setDatabaseId(e.target.value)} />
+                <div className="flex items-center justify-between">
+                  <Label>Database</Label>
+                  {!useMock && (
+                    <Button 
+                      variant={availableDatabases.length === 0 ? "default" : "ghost"} 
+                      size="sm" 
+                      onClick={fetchDatabases} 
+                      disabled={databasesLoading || !notionToken.trim()}
+                    >
+                      <Search className="mr-1 h-3 w-3" /> {databasesLoading ? "Loading..." : "Fetch Databases"}
+                    </Button>
+                  )}
+                </div>
+                <Select value={databaseId} onValueChange={setDatabaseId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={
+                      useMock 
+                        ? "Select mock database" 
+                        : availableDatabases.length > 0 
+                          ? "Select database" 
+                          : notionToken.trim() 
+                            ? "Click 'Fetch Databases' to load your databases"
+                            : "Enter your Notion token first"
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {useMock ? (
+                      <>
+                        <SelectItem value="mock-db">Mock Sample Database</SelectItem>
+                        <SelectItem value="mock-db-2">Another Mock Database</SelectItem>
+                      </>
+                    ) : (
+                      <>
+                        {availableDatabases.map((db) => (
+                          <SelectItem key={db.id} value={db.id}>
+                            {db.title}
+                            <span className="ml-2 text-xs text-slate-500">({db.id.slice(0, 8)}...)</span>
+                          </SelectItem>
+                        ))}
+                        {availableDatabases.length === 0 && (
+                          <SelectItem value="__empty__" disabled>
+                            {notionToken.trim() 
+                              ? "No databases found - click 'Fetch Databases'" 
+                              : "Enter your Notion token to fetch databases"}
+                          </SelectItem>
+                        )}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
 
-                <Button variant="secondary" onClick={loadDatabase} disabled={!databaseId || (!useMock && !proxyBaseUrl) || loadingDb}>
-                  <Database className="mr-2 h-4 w-4" /> {loadingDb ? "Loading…" : "Load Database"}
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={loadDatabase} disabled={!databaseId || (!useMock && !proxyBaseUrl) || loadingDb}>
+                    <Database className="mr-2 h-4 w-4" /> {loadingDb ? "Loading…" : "Load Database"}
+                  </Button>
+                  <Button variant="outline" onClick={extractDatabaseSchema} disabled={!databaseId || (!useMock && !proxyBaseUrl) || schemaLoading}>
+                    <Code className="mr-2 h-4 w-4" /> {schemaLoading ? "Extracting…" : "Extract Schema"}
+                  </Button>
+                </div>
                 {loadSuccess && (
                   <Alert className="mt-2">
                     <CheckCircle2 className="h-4 w-4" />
@@ -709,6 +971,34 @@ export default function NotionExcelMergeApp() {
                     <AlertTriangle className="h-4 w-4" />
                     <AlertTitle>Failed to load database</AlertTitle>
                     <AlertDescription className="text-xs">{loadError}</AlertDescription>
+                  </Alert>
+                )}
+                {jsonSchema && (
+                  <Alert className="mt-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Schema extracted</AlertTitle>
+                    <AlertDescription className="text-xs">JSON schema has been downloaded automatically</AlertDescription>
+                  </Alert>
+                )}
+                {schemaError && (
+                  <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Schema extraction failed</AlertTitle>
+                    <AlertDescription className="text-xs">{schemaError}</AlertDescription>
+                  </Alert>
+                )}
+                {databasesError && (
+                  <Alert variant="destructive" className="mt-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Failed to fetch databases</AlertTitle>
+                    <AlertDescription className="text-xs">{databasesError}</AlertDescription>
+                  </Alert>
+                )}
+                {!useMock && availableDatabases.length > 0 && (
+                  <Alert className="mt-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Databases loaded</AlertTitle>
+                    <AlertDescription className="text-xs">Found {availableDatabases.length} database(s)</AlertDescription>
                   </Alert>
                 )}
                 {!!dbProps.length && (
@@ -957,8 +1247,8 @@ export default function NotionExcelMergeApp() {
             </CardHeader>
             <CardContent className="text-sm text-slate-600 space-y-2">
               <ul className="list-disc ml-5 space-y-1">
-                <li>Canvas/browser mode uses <span className="font-medium">Mock</span> by default to avoid CORS and SDK issues.</li>
-                <li>Switch to <span className="font-medium">Proxy</span> and set <code>Proxy API Base URL</code> to call your server that holds the Notion key.</li>
+                <li><span className="font-medium">Proxy mode</span> is the default - enter your Notion token and click "Fetch Databases" to get started.</li>
+                <li>Switch to <span className="font-medium">Mock</span> mode for testing with sample data without requiring a real Notion token.</li>
                 <li>Supported property types: title, rich_text, number, email, url, phone_number, select, multi_select, date, checkbox, status.</li>
                 <li>Be mindful of rate limits when using a real backend. This UI sends operations serially.</li>
               </ul>
