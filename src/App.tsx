@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import {
   Upload,
+  Download,
   Database,
   PlayCircle,
   Eye,
@@ -770,6 +771,38 @@ export default function NotionExcelMergeApp() {
     }
   }
 
+  function downloadDatabaseAsExcel() {
+    if (!pages.length || !dbProps.length) return;
+
+    // Convert Notion pages to Excel-friendly format
+    const excelData = pages.map((page) => {
+      const row: Record<string, any> = {};
+
+      dbProps.forEach((prop) => {
+        const value = getNotionPropertyPlainValue((page as any).properties[prop.name]);
+        row[prop.name] = value ?? "";
+      });
+
+      return row;
+    });
+
+    // Create a new workbook
+    const wb = XLSX.utils.book_new();
+
+    // Create worksheet from the data
+    const ws = XLSX.utils.json_to_sheet(excelData);
+
+    // Add the worksheet to the workbook
+    XLSX.utils.book_append_sheet(wb, ws, "Database Export");
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+    const filename = `notion-database-${databaseId.slice(0, 8)}-${timestamp}.xlsx`;
+
+    // Save the file
+    XLSX.writeFile(wb, filename);
+  }
+
   async function onExecute() {
     if (!databaseId) return;
     setRunStatus("running"); setRunError(null); setProgress(0);
@@ -957,6 +990,9 @@ export default function NotionExcelMergeApp() {
                   </Button>
                   <Button variant="outline" onClick={extractDatabaseSchema} disabled={!databaseId || (!useMock && !proxyBaseUrl) || schemaLoading}>
                     <Code className="mr-2 h-4 w-4" /> {schemaLoading ? "Extracting…" : "Extract Schema"}
+                  </Button>
+                  <Button variant="outline" onClick={downloadDatabaseAsExcel} disabled={!pages.length || !dbProps.length}>
+                    <Download className="mr-2 h-4 w-4" /> Download Excel
                   </Button>
                 </div>
                 {loadSuccess && (
